@@ -2,7 +2,7 @@ ext.versions = [
         minSdk            : 19,
         compileSdk        : 30,
         buildTools        : '30.0.2',
-        publishGroupID    : 'com.cottacush',
+        publishGroupID    : 'com.makogai',
         publishArtifactID : 'CurrencyEditText',
         publishVersion    : '1.0.0',
         publishVersionCode: 1,
