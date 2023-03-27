@@ -15,123 +15,133 @@
  */
 package com.cottacush.android.currencyedittext
 
-import android.content.Context
-import android.graphics.Rect
-import android.os.Build
-import android.text.InputType
-import android.util.AttributeSet
-import androidx.annotation.RequiresApi
-import com.google.android.material.textfield.TextInputEditText
-import java.math.BigDecimal
+import android.annotation.SuppressLint
+import android.text.Editable
+import android.text.TextWatcher
+import android.widget.EditText
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
+import java.text.NumberFormat
+import java.text.ParseException
 import java.util.*
+import kotlin.math.min
 
-class CurrencyEditText(
-    context: Context,
-    attrs: AttributeSet?
-) : TextInputEditText(context, attrs) {
-    private lateinit var currencySymbolPrefix: String
-    private var textWatcher: CurrencyInputWatcher
-    private var locale: Locale = Locale.getDefault()
-    private var maxDP: Int
+class CurrencyInputWatcher(
+    private val editText: EditText,
+    private val currencySymbol: String,
+    locale: Locale,
+    private val maxNumberOfDecimalPlaces: Int = 2
+) : TextWatcher {
 
     init {
-        var useCurrencySymbolAsHint = false
-        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-        var localeTag: String?
-        val prefix: String
-        context.theme.obtainStyledAttributes(
-            attrs,
-            R.styleable.CurrencyEditText,
-            0, 0
-        ).run {
-            try {
-                prefix = getString(R.styleable.CurrencyEditText_currencySymbol).orEmpty()
-                localeTag = getString(R.styleable.CurrencyEditText_localeTag)
-                useCurrencySymbolAsHint = getBoolean(R.styleable.CurrencyEditText_useCurrencySymbolAsHint, false)
-                maxDP = getInt(R.styleable.CurrencyEditText_maxNumberOfDecimalDigits, 2)
-            } finally {
-                recycle()
+        if (maxNumberOfDecimalPlaces < 1) {
+            throw IllegalArgumentException("Maximum number of Decimal Digits must be a positive integer")
+        }
+    }
+
+    companion object {
+        const val FRACTION_FORMAT_PATTERN_PREFIX = "#,##0."
+    }
+
+    private var hasDecimalPoint = false
+    private var lastText: String = ""
+    private val wholeNumberDecimalFormat =
+        (NumberFormat.getNumberInstance(locale) as DecimalFormat).apply {
+            applyPattern("#,##0")
+        }
+
+    private val fractionDecimalFormat = (NumberFormat.getNumberInstance(locale) as DecimalFormat)
+
+    val decimalFormatSymbols: DecimalFormatSymbols
+        get() = wholeNumberDecimalFormat.decimalFormatSymbols
+
+    override fun beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int) {
+        fractionDecimalFormat.isDecimalSeparatorAlwaysShown = true
+        lastText = s.toString()
+    }
+
+    override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {
+        hasDecimalPoint = s.toString().contains(decimalFormatSymbols.decimalSeparator.toString())
+    }
+
+    @SuppressLint("SetTextI18n")
+    override fun afterTextChanged(s: Editable) {
+        val newInputString = s.toString()
+        val isParsableString = try {
+            fractionDecimalFormat.parse(newInputString)!!
+            true
+        } catch (e: ParseException) {
+            false
+        }
+
+        if (hasDecimalPoint && s.toString().count { it == decimalFormatSymbols.decimalSeparator } > 1) {
+            val lastSelection = editText.selectionStart - 1
+            editText.setText(lastText)
+            editText.setSelection(lastSelection)
+            return
+        }
+
+        if (newInputString.length < currencySymbol.length && !isParsableString) {
+            editText.setText(currencySymbol)
+            editText.setSelection(currencySymbol.length)
+            return
+        }
+
+        if (newInputString == currencySymbol) {
+            editText.setSelection(currencySymbol.length)
+            return
+        }
+
+        editText.removeTextChangedListener(this)
+        val startLength = editText.text.length
+        try {
+            var numberWithoutGroupingSeparator =
+                parseMoneyValue(
+                    newInputString,
+                    decimalFormatSymbols.groupingSeparator.toString(),
+                    currencySymbol
+                )
+            if (numberWithoutGroupingSeparator == decimalFormatSymbols.decimalSeparator.toString()) {
+                numberWithoutGroupingSeparator = "0$numberWithoutGroupingSeparator"
             }
+
+            numberWithoutGroupingSeparator = truncateNumberToMaxDecimalDigits(
+                numberWithoutGroupingSeparator,
+                maxNumberOfDecimalPlaces,
+                decimalFormatSymbols.decimalSeparator
+            )
+
+            val parsedNumber = fractionDecimalFormat.parse(numberWithoutGroupingSeparator)!!
+            val selectionStartIndex = editText.selectionStart
+            if (hasDecimalPoint) {
+                fractionDecimalFormat.applyPattern(
+                    FRACTION_FORMAT_PATTERN_PREFIX +
+                            getFormatSequenceAfterDecimalSeparator(numberWithoutGroupingSeparator)
+                )
+                editText.setText("$currencySymbol${fractionDecimalFormat.format(parsedNumber)}")
+            } else {
+                editText.setText("$currencySymbol${wholeNumberDecimalFormat.format(parsedNumber)}")
+            }
+            val endLength = editText.text.length
+            val selection = selectionStartIndex + (endLength - startLength)
+            if (selection > 0 && selection <= editText.text.length) {
+                editText.setSelection(selection)
+            } else {
+                editText.setSelection(editText.text.length - 1)
+            }
+        } catch (e: ParseException) {
+            e.printStackTrace()
         }
-        currencySymbolPrefix = if (prefix.isBlank()) "" else "$prefix "
-        if (useCurrencySymbolAsHint) hint = currencySymbolPrefix
-        if (isLollipopAndAbove() && !localeTag.isNullOrBlank()) locale = getLocaleFromTag(localeTag!!)
-        textWatcher = CurrencyInputWatcher(this, currencySymbolPrefix, locale, maxDP)
-        addTextChangedListener(textWatcher)
+        editText.addTextChangedListener(this)
     }
 
-    fun setLocale(locale: Locale) {
-        this.locale = locale
-        invalidateTextWatcher()
-    }
-
-    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-    fun setLocale(localeTag: String) {
-        locale = getLocaleFromTag(localeTag)
-        invalidateTextWatcher()
-    }
-
-    fun setCurrencySymbol(currencySymbol: String, useCurrencySymbolAsHint: Boolean = false) {
-        currencySymbolPrefix = "$currencySymbol "
-        if (useCurrencySymbolAsHint) hint = currencySymbolPrefix
-        invalidateTextWatcher()
-    }
-
-    fun setMaxNumberOfDecimalDigits(maxDP: Int) {
-        this.maxDP = maxDP
-        invalidateTextWatcher()
-    }
-
-    private fun invalidateTextWatcher() {
-        removeTextChangedListener(textWatcher)
-        textWatcher = CurrencyInputWatcher(this, currencySymbolPrefix, locale, maxDP)
-        addTextChangedListener(textWatcher)
-    }
-
-    fun getNumericValue(): Double {
-        return parseMoneyValueWithLocale(
-            locale,
-            text.toString(),
-            textWatcher.decimalFormatSymbols.groupingSeparator.toString(),
-            currencySymbolPrefix
-        ).toDouble()
-    }
-
-    fun getNumericValueBigDecimal(): BigDecimal {
-        return BigDecimal(
-            parseMoneyValueWithLocale(
-                locale,
-                text.toString(),
-                textWatcher.decimalFormatSymbols.groupingSeparator.toString(),
-                currencySymbolPrefix
-            ).toString()
-        )
-    }
-
-    override fun setText(text: CharSequence?, type: BufferType?) {
-        super.setText(text, type)
-        getText()?.length?.let { setSelection(it) }
-    }
-
-    override fun onFocusChanged(focused: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
-        super.onFocusChanged(focused, direction, previouslyFocusedRect)
-        if (focused) {
-            removeTextChangedListener(textWatcher)
-            addTextChangedListener(textWatcher)
-            if (text.toString().isEmpty()) setText(currencySymbolPrefix)
-        } else {
-            removeTextChangedListener(textWatcher)
-            if (text.toString() == currencySymbolPrefix) setText("")
-        }
-    }
-
-    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
-        if (::currencySymbolPrefix.isInitialized.not()) return
-        val symbolLength = currencySymbolPrefix.length
-        if (selEnd < symbolLength && text.toString().length >= symbolLength) {
-            setSelection(symbolLength)
-        } else {
-            super.onSelectionChanged(selStart, selEnd)
-        }
+    /**
+     * @param number the original number to format
+     * @return the appropriate zero sequence for the input number. e.g 156.1 returns "0",
+     *  14.98 returns "00"
+     */
+    private fun getFormatSequenceAfterDecimalSeparator(number: String): String {
+        val noOfCharactersAfterDecimalPoint = number.length - number.indexOf(decimalFormatSymbols.decimalSeparator) - 1
+        return "0".repeat(min(noOfCharactersAfterDecimalPoint, maxNumberOfDecimalPlaces))
     }
 }
